@@ -1,0 +1,254 @@
+# PiccoOS CI — build and test only. Nothing here touches a physical device.
+#
+# Jobs:
+#   pins        verify pinned revisions and action SHAs (piccoos/tools/verify_pins.sh)
+#   corpus      generate the 60-EPUB synthetic corpus, validate with epubcheck (sha256-checked)
+#   firmware    build env `picco`; publishes logs + sha256 + environment record.
+#               firmware.bin is NOT published by default (GPLv3 distribution — Decision Log D-022).
+#   simulator   build env `simulator_picco`, run headless, upload screenshots + logs
+#   unit-tests  upstream host unit tests (ctest)
+#
+# Reproducibility scope (see piccoos/PINS.md): sources, actions and test tools are pinned
+# exactly. Python build tools follow upstream's version ranges and are RECORDED per run
+# (pip freeze, pio pkg list) in the "piccoos-env-*" artifacts, not yet pinned.
+# Toolchain steps mirror upstream .github/workflows/ci.yml at 3a5bfac; re-sync on rebase.
+name: PiccoOS CI
+
+on:
+  push:
+    branches: ["piccoos-dev", "piccoos/**"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish_firmware:
+        description: "Also upload firmware.bin (+ GPL source notice). Review only, never flash before Go."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Explicit `shell: bash` makes GitHub run `bash --noprofile --norc -eo pipefail {0}`.
+# The implicit default is `bash -e {0}` WITHOUT pipefail, so `cmd | tee log` would hide failures.
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: piccoos-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_SHA: 3a5bfac375c293cb38f7e6e28f7736e7d451ef57
+  FREEINK_SDK_SHA: 6a208c0c46cce99bafa334bc4f171f5e558c5195
+  PIO_CORE_URL: https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+  PILLOW_VERSION: "12.3.0"
+  EPUBCHECK_VERSION: 5.2.1
+  EPUBCHECK_SHA256: 0532f6291faa2bb729dd253f958868a2a57dbd2c32f881a97c7c980c5940309e
+  CORPUS_SEED: "20261112"
+
+jobs:
+  pins:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Verify pins (actions, upstream, SDK, simulator)
+        run: |
+          set -euo pipefail
+          chmod +x piccoos/tools/verify_pins.sh
+          piccoos/tools/verify_pins.sh .github/workflows/piccoos-ci.yml | tee pins.txt
+      - name: Summary
+        if: always()
+        run: |
+          { echo '## Pins'; echo '```'; cat pins.txt 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  corpus:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install generator dependency
+        run: python -m pip install "Pillow==${PILLOW_VERSION}"
+      - name: Generate corpus (bundled fonts, fixed seed)
+        run: python -I piccoos/tools/corpus/make_corpus.py --out corpus --seed "$CORPUS_SEED"
+      - name: Validate with epubcheck (download verified by sha256)
+        env:
+          LC_ALL: C.UTF-8
+        run: |
+          curl -sSfL -o ec.zip "https://github.com/w3c/epubcheck/releases/download/v${EPUBCHECK_VERSION}/epubcheck-${EPUBCHECK_VERSION}.zip"
+          echo "${EPUBCHECK_SHA256}  ec.zip" | sha256sum -c -
+          unzip -q ec.zip
+          fails=0
+          for f in corpus/books/*.epub; do
+            java -Dsun.jnu.encoding=UTF-8 -Dfile.encoding=UTF-8 \
+              -jar "epubcheck-${EPUBCHECK_VERSION}/epubcheck.jar" -q "$f" || fails=$((fails+1))
+          done
+          echo "epubcheck failures: $fails / $(ls corpus/books/*.epub | wc -l)" | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$fails" -eq 0
+      - name: Pack corpus with UTF-8 names and self-verify
+        run: python -I piccoos/tools/corpus/pack_corpus.py corpus piccoos-corpus.zip
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: piccoos-corpus
+          path: corpus
+          if-no-files-found: error
+
+  firmware:
+    needs: pins
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: false
+      - name: Install PlatformIO Core (mirrors upstream ci.yml)
+        run: |
+          uv pip install --system "$PIO_CORE_URL"
+          uv pip install --system "littlefs-python>=0.16.0" "fatfs-ng>=0.1.14" "pyyaml>=6.0.2" \
+            "rich-click>=1.8.6" "zopfli>=0.2.2" "intelhex>=2.3.0" "rich>=14.0.0" "urllib3<2" \
+            "cryptography>=45.0.3" "certifi>=2025.8.3" "ecdsa>=0.19.1" "bitstring>=4.3.1" \
+            "reedsolo>=1.5.3,<1.8" "esp-idf-size>=2.0.0" "esp-coredump>=1.14.0"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.platformio
+          key: piccoos-pio-${{ runner.os }}-picco-${{ hashFiles('platformio.ini', 'scripts/patch_pioarduino_cache.py') }}
+      - name: Pin pioarduino core inside the platform penv (upstream workaround)
+        run: |
+          pio pkg install -e picco
+          uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.1.19"
+      - name: Build picco
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          pio run -e picco 2>&1 | tee out/pio-build.log
+          sha256sum .pio/build/picco/firmware.bin | tee out/firmware-picco.sha256
+          {
+            echo "## picco build"
+            grep -E "RAM:\s|Flash:\s" out/pio-build.log || true
+            echo '```'; cat out/firmware-picco.sha256; echo '```'
+            echo "> firmware.bin is not published by default. Never flash before Phase 0B approval and Go (D-007, D-009)."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Record build environment
+        if: always()
+        run: |
+          mkdir -p out
+          { python --version; pio --version; uv pip freeze --system; } > out/pip-freeze.txt 2>&1 || true
+          ~/.platformio/penv/bin/python -m pip freeze > out/penv-freeze.txt 2>&1 || true
+          pio pkg list -e picco > out/pio-pkg-list.txt 2>&1 || true
+          git submodule status --recursive > out/submodules.txt 2>&1 || true
+          git rev-parse HEAD > out/source-commit.txt
+      - name: Upload logs and environment (always)
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: piccoos-env-firmware
+          path: out
+          if-no-files-found: warn
+      - name: Prepare firmware bundle with source notice (opt-in)
+        if: ${{ success() && github.event_name == 'workflow_dispatch' && inputs.publish_firmware }}
+        run: |
+          mkdir -p bundle
+          cp .pio/build/picco/firmware.bin out/firmware-picco.sha256 bundle/
+          cp -R licenses bundle/licenses
+          cp LICENSE bundle/LICENSE
+          cp piccoos/PINS.md bundle/
+          {
+            echo "PiccoOS firmware build for review. NOT FOR FLASHING before Phase 0B Go."
+            echo "The combined firmware is licensed GPLv3 (see licenses/README.md)."
+            echo "Corresponding Source: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY} at commit ${GITHUB_SHA},"
+            echo "with submodules (submodules.txt) and the PlatformIO packages listed in pio-pkg-list.txt."
+          } > bundle/SOURCE.txt
+          cp out/submodules.txt out/pio-pkg-list.txt bundle/
+      - name: Upload firmware bundle (opt-in)
+        if: ${{ success() && github.event_name == 'workflow_dispatch' && inputs.publish_firmware }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: piccoos-firmware-picco-REVIEW-ONLY
+          path: bundle
+          retention-days: 7
+          if-no-files-found: error
+
+  simulator:
+    needs: [pins, corpus]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: false
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsdl2-dev libssl-dev
+          uv pip install --system "$PIO_CORE_URL" "Pillow==${PILLOW_VERSION}"
+      - name: Enable simulator env (no change to platformio.ini)
+        run: cp piccoos/sim/platformio.sim.linux.ini platformio.local.ini
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.platformio
+          key: piccoos-pio-${{ runner.os }}-sim-${{ hashFiles('platformio.ini', 'piccoos/sim/platformio.sim.linux.ini') }}
+      - name: Build simulator_picco
+        run: |
+          set -euo pipefail
+          mkdir -p sim-out
+          pio run -e simulator_picco 2>&1 | tee sim-out/pio-build.log
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: piccoos-corpus
+          path: corpus
+      - name: Capture screenshots (headless, SDL dummy driver)
+        timeout-minutes: 15
+        run: |
+          chmod +x piccoos/sim/capture_screens.sh
+          RUN_TIMEOUT_S=600 SCENARIO_TIMEOUT_S=120 \
+            piccoos/sim/capture_screens.sh .pio/build/simulator_picco/program corpus sim-out
+      - name: Summary
+        if: always()
+        run: |
+          { echo '## Simulator scenarios (SIM only, D-014)'; echo '```'; cat sim-out/summary.txt 2>/dev/null || echo "no summary"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Record environment
+        if: always()
+        run: |
+          mkdir -p sim-out
+          { python --version; pio --version; uv pip freeze --system; } > sim-out/pip-freeze.txt 2>&1 || true
+          pio pkg list -e simulator_picco > sim-out/pio-pkg-list.txt 2>&1 || true
+          sdl2-config --version > sim-out/sdl2-version.txt 2>&1 || true
+      - name: Upload screenshots, logs and environment (always)
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: piccoos-sim-screens
+          path: sim-out
+          if-no-files-found: warn
+
+  unit-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          submodules: recursive
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build zlib1g-dev
+      - run: cmake -S test -B build/test -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build/test
+      - run: ctest --test-dir build/test --output-on-failure -j
