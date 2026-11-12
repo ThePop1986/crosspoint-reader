@@ -15,11 +15,15 @@ Upstream-файлы не меняются, пока нет утверждённ�
 | `tools/corpus/make_corpus.py` | Генератор 60 синтетических EPUB (CC0, встроенные шрифты, фиксированный seed) |
 | `tools/corpus/pack_corpus.py` | Упаковка корпуса в ZIP с UTF-8-именами + самопроверка по манифесту |
 | `tools/corpus/LICENSE-CORPUS.md`, `tools/corpus/fonts/` | Лицензия корпуса; DejaVu Serif + лицензия |
+| `docs/PiccoOS_Home_Balanced_3.0_Spec.md` | Утверждённое ТЗ Balanced 3.0 (Редакция 1.0 финальная, 2026-11-12) |
+| `docs/PiccoOS_Decision_Log.md` | Журнал решений D-001…D-038 + A-02 Closed |
 
-## Что проверено, а что нет (2026-11-12, kit v4)
-| Проверено в среде Claude | Не проверено |
+## Что проверено, а что нет (2026-11-12, kit v4.1)
+| Проверено | Не проверено |
 |---|---|
-| `actionlint` для workflow; `bash -n` для скриптов | Запуск workflow на GitHub (A-02 не завершена до зелёного CI) |
-| `verify_pins.sh`: 14/14 OK; отрицательный тест (неверный тег) — FAIL, как и должно | Сборка `picco` и `simulator_picco` |
-| `capture_screens.sh` на **заглушке, повторяющей семантику скриптов симулятора** (v3 воспроизводит сбой CI один в один, v4 проходит, включая `library` и `library_tap`): относительный путь, пустой кадр, старые кадры, тема не применилась, таймаут сценария и общий таймаут, экспериментальный сценарий | Работа скрипта с **реальным** симулятором; что `home_cover_grid` — именно COVER_GRID (проверить глазами) |
-| Корпус: 60/60 epubcheck 5.2.1, детерминизм на Linux, UTF-8-имена в ZIP (проверено Info-ZIP `unzip`) | Детерминизм корпуса на macOS |
+| `actionlint` для workflow; `bash -n` для скриптов | Сборка `picco` и `simulator_picco` |
+| `verify_pins.sh`: 14/14 OK; отрицательный тест (неверный тег) — FAIL, как и должно | Детерминизм корпуса на macOS |
+| `capture_screens.sh` на **заглушке** (v3 воспроизводит сбой CI один в один, v4 проходит): относительный путь, пустой кадр, старые кадры, тема не применилась, таймаут сценария и общий, экспериментальный сценарий | |
+| Корпус: 60/60 epubcheck 5.2.1, детерминизм на Linux, UTF-8-имена в ZIP (проверено Info-ZIP `unzip`) | |
+| **A-02 — Closed.** GitHub Actions run `43202234564`: 5/5 jobs success; 5 PNG 480×800 и `summary.txt` (`required failures: 0`) проверены Claude Code | |
+| `home_cover_grid` — COVER_GRID подтверждён визуально; `library` и `library_tap` — корректный результат | |
