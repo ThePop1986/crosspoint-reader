@@ -68,6 +68,10 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/piccoos-sim.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 if [ "${HEADLESS:-1}" = "1" ]; then export SDL_VIDEODRIVER=dummy; fi
+# The dummy video driver has no accelerated renderer; HalDisplay::begin() asks for
+# SDL_RENDERER_ACCELERATED, gets NULL, and presentIfNeeded() then silently skips SHOT.
+# Naming the software renderer bypasses the flag check (verified, SDL 2.32.10).
+if [ "${HEADLESS:-1}" = "1" ]; then export SDL_RENDER_DRIVER=software; fi
 # WAIT steps inside the simulator time out on their own (exit 1); each scenario
 # sets that below its hard limit (see run_scenario).
 export CROSSPOINT_SIM_SCREEN_TEXT=1
