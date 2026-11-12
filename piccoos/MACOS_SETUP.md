@@ -34,7 +34,7 @@ git -C freeink-sdk rev-parse HEAD
 Ожидается: `3a5bfac375c293cb38f7e6e28f7736e7d451ef57` и `6a208c0c46cce99bafa334bc4f171f5e558c5195`. Если значения другие — остановитесь и пришлите вывод.
 
 ## Шаг 4. Добавить файлы PiccoOS и запустить CI
-1. Распакуйте `piccoos-phase0a-kit-v3.zip` в корень репозитория (`~/dev/piccoos`). Появятся `piccoos/` и `.github/workflows/piccoos-ci.yml`.
+1. Распакуйте `piccoos-phase0a-kit-v4-final.zip` в корень репозитория (`~/dev/piccoos`). Появятся `piccoos/` и `.github/workflows/piccoos-ci.yml`.
 2. Проверьте закреплённые версии (только чтение, нужен интернет):
    ```bash
    chmod +x piccoos/tools/verify_pins.sh piccoos/sim/capture_screens.sh
@@ -44,7 +44,7 @@ git -C freeink-sdk rev-parse HEAD
 3. Закоммитьте и отправьте:
    ```bash
    git add piccoos .github/workflows/piccoos-ci.yml
-   git commit -m "PiccoOS: Phase 0A kit v3 (CI, corpus, simulator config, docs)"
+   git commit -m "PiccoOS: Phase 0A kit v4 (CI, corpus, simulator config, docs)"
    git push origin piccoos-dev
    ```
 4. GitHub → **Actions** → **PiccoOS CI** запустится сам (push в `piccoos-dev`). Первая сборка — 15–30 минут.

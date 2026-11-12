@@ -35,6 +35,8 @@
 | Python (CI) | 3.13 |
 | Board (env `picco`) | `esp32-s3-devkitc1-n16r8`, `dio_opi`, `partitions_picco.csv` |
 | Simulator lib_deps | ArduinoJson 7.4.2, QRCode 0.0.1 (было `^0.0.1`), WebSockets 2.7.3, AnimatedGIF@`d01888f…` |
+| Simulator platform | `native@1.2.1` (закреплено по записи CI на `c6372a68`) |
+| Записано CI на `c6372a68` (env `picco`) | framework-arduinoespressif32 3.3.11, libs 5.5.5+sha.b774170ff46, toolchain-xtensa-esp-elf 14.2.0+20260121, esptoolpy 5.3.0; SDL2 2.30.0 (runner) |
 
 ## GitHub Actions
 

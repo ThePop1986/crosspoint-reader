@@ -147,7 +147,7 @@ jobs:
         run: |
           mkdir -p out
           { python --version; pio --version; uv pip freeze --system; } > out/pip-freeze.txt 2>&1 || true
-          ~/.platformio/penv/bin/python -m pip freeze > out/penv-freeze.txt 2>&1 || true
+          uv pip freeze --python ~/.platformio/penv/bin/python > out/penv-freeze.txt 2>&1 || true  # penv has no pip
           pio pkg list -e picco > out/pio-pkg-list.txt 2>&1 || true
           git submodule status --recursive > out/submodules.txt 2>&1 || true
           git rev-parse HEAD > out/source-commit.txt
