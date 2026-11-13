@@ -5,13 +5,13 @@
 #include "./FileBrowserActivity.h"
 #include "RecentBooksStore.h"
 #include "activities/Activity.h"
-#include "components/CoverGridHomeUi.h"
+#include "piccoos/home/HomeScreenUi.h"
 #include "util/ButtonNavigator.h"
 
 struct Rect;
 
 class HomeActivity final : public Activity {
-  std::unique_ptr<CoverGridHomeUi> coverGridUi;
+  std::unique_ptr<HomeScreenUi> homeScreenUi;  // PiccoOS: D-033
   ButtonNavigator buttonNavigator;
   int selectorIndex = 0;
   bool recentsLoading = false;

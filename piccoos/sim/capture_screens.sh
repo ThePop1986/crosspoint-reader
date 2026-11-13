@@ -19,9 +19,13 @@
 #   REQUIRED (failure fails the run):
 #     home_lyra        default theme, Home screen
 #     home_cover_grid  upstream COVER_GRID (uiTheme=4), reference for D-017
+#     home_balanced    PiccoOS Balanced 3.0 (homeLayout=1), D-034
 #   EXPERIMENTAL (reported, never fails the run):
-#     library          Home -> DOWN (NavNext) -> ENTER -> Library (button path)
-#     library_tap      Home -> TAP Library row (0.50, 0.5225) -> Library (touch path)
+#     library                   Home -> DOWN (NavNext) -> ENTER -> Library (button path)
+#     library_tap               Home -> TAP Library row (0.50, 0.5225) -> Library (touch path)
+#     home_balanced_reading     Balanced + 4 recent books injected; cover+Cyrillic wrapping test
+#     home_balanced_empty       Balanced with empty SD; tests empty-state render path
+#     home_balanced_reader_landscape_setting   Balanced + orientation=1; C-4 accepted (D-036)
 #
 # A required scenario passes only if ALL hold:
 #   - the simulator exits with status 0 within the per-scenario timeout,
@@ -57,6 +61,7 @@ PROGRAM=$(abspath "$1") || { echo "bad program path: $1" >&2; exit 2; }
 CORPUS=$(abspath "$2") || { echo "bad corpus path: $2" >&2; exit 2; }
 mkdir -p "$3" || exit 2
 OUT=$(abspath "$3")
+SIM_DIR="$(abspath "$(dirname "$0")")"
 
 [ -f "$PROGRAM" ] && [ -x "$PROGRAM" ] || { echo "not an executable file: $PROGRAM" >&2; exit 2; }
 ls "$CORPUS"/books/*.epub >/dev/null 2>&1 || { echo "no EPUBs in $CORPUS/books" >&2; exit 2; }
@@ -82,6 +87,9 @@ python3 -c "import PIL" 2>/dev/null && HAVE_PIL=1
 SUMMARY="$OUT/summary.txt"
 : > "$SUMMARY"
 required_failures=0
+
+# shellcheck source=lib_validate.sh
+source "$SIM_DIR/lib_validate.sh"
 
 # run_with_timeout <seconds> <log> <cmd...> — portable (no GNU `timeout` on macOS).
 run_with_timeout() {
@@ -146,10 +154,22 @@ if not quit_seen:
 PY
 }
 
+# validator_selftest: run T1-T12 unit tests before any simulator scenarios.
+# Failures are required; scenarios still run for diagnostics.
+selftest_rc=0
+"$SIM_DIR/test_validate_home.sh" > "$OUT/validator_selftest.log" 2>&1 || selftest_rc=$?
+if [ "$selftest_rc" -ne 0 ]; then
+  echo "required validator_selftest FAIL (exit $selftest_rc; see validator_selftest.log)" | tee -a "$SUMMARY"
+  required_failures=$((required_failures + 1))
+else
+  echo "required validator_selftest PASS" | tee -a "$SUMMARY"
+fi
+
 # run_scenario <required|experimental> <name> <settings-json-or-empty> <script> <expected-images...>
 run_scenario() {
   local kind=$1 name=$2 settings=$3 script=$4; shift 4
   local img
+  rm -f "$OUT/$name.log" "$OUT/$name.timeline.txt"  # F3: stale artifacts from prior runs
   for img in "$@"; do rm -f "$OUT/$img" "$OUT/${img%.bmp}.png"; done
   local lint_msg
   if ! lint_msg=$(lint_script "$script" "$OUT/$name.timeline.txt"); then
@@ -166,10 +186,34 @@ run_scenario() {
   local limit=$SCENARIO_TIMEOUT_S
   [ "$remaining" -lt "$limit" ] && limit=$remaining
   local sd="$WORK/$name"
-  mkdir -p "$sd/books" "$sd/.crosspoint"
-  cp "$CORPUS"/books/*.epub "$sd/books/"
+  mkdir -p "$sd/books" "$sd/.crosspoint" || {
+    echo "$kind $name FAIL setup: mkdir failed" | tee -a "$SUMMARY"
+    [ "$kind" = required ] && required_failures=$((required_failures + 1))
+    return 0
+  }
+  cp "$CORPUS"/books/*.epub "$sd/books/" || {
+    echo "$kind $name FAIL setup: cp books failed" | tee -a "$SUMMARY"
+    [ "$kind" = required ] && required_failures=$((required_failures + 1))
+    return 0
+  }
   # Assumption (verify on first run): keys missing from settings.json keep defaults.
-  [ -n "$settings" ] && printf '%s\n' "$settings" > "$sd/.crosspoint/settings.json"
+  if [ -n "$settings" ]; then
+    printf '%s\n' "$settings" > "$sd/.crosspoint/settings.json" || {
+      echo "$kind $name FAIL setup: write settings.json failed" | tee -a "$SUMMARY"
+      [ "$kind" = required ] && required_failures=$((required_failures + 1))
+      return 0
+    }
+  fi
+  # PiccoOS: optional extra SD setup (set _EXTRA_SD_SETUP=fn_name before calling).
+  if [ -n "${_EXTRA_SD_SETUP:-}" ]; then
+    local setup_fn="${_EXTRA_SD_SETUP}"
+    _EXTRA_SD_SETUP=
+    "${setup_fn}" "$sd" "$CORPUS" || {
+      echo "$kind $name FAIL setup: '${setup_fn}' failed" | tee -a "$SUMMARY"
+      [ "$kind" = required ] && required_failures=$((required_failures + 1))
+      return 0
+    }
+  fi
 
   local log="$OUT/$name.log" start rc status="PASS" reason=""
   start=$(date +%s)
@@ -213,9 +257,24 @@ run_scenario required home_cover_grid '{"uiTheme":4}' \
   "0:WAIT:Entering activity: Home;5000:SHOT:$OUT/home_cover_grid.bmp;6500:QUIT" \
   home_cover_grid.bmp
 
+# PiccoOS: Balanced 3.0 Home screen (D-034)
+run_scenario required home_balanced '{"uiTheme":1,"homeLayout":1}' \
+  "0:WAIT:Entering activity: Home;5000:SHOT:$OUT/home_balanced.bmp;6500:QUIT" \
+  home_balanced.bmp
+
+# F-4: home_balanced validation via lib_validate.sh (fail-closed, R3, F2).
+run_home_validation \
+  "$OUT/home_balanced.bmp" "$OUT/home_balanced.log" "$OUT/home_lyra.bmp" \
+  required home_balanced_validate
+# Self-check: bmp=home_lyra (standard), log=home_lyra.log, ref=home_balanced (different layout).
+# PASS only if validator rejects home_lyra (log=FAIL, pixel_sig=FAIL); validator error → FAIL.
+run_home_selfcheck \
+  "$OUT/home_lyra.bmp" "$OUT/home_lyra.log" "$OUT/home_balanced.bmp" \
+  required home_balanced_selfcheck
+
 # home_cover_grid must not look like home_lyra (otherwise uiTheme=4 was ignored).
 if [ "$HAVE_PIL" = "1" ] && [ -s "$OUT/home_lyra.bmp" ] && [ -s "$OUT/home_cover_grid.bmp" ]; then
-  diff_pct=$(python3 - "$OUT/home_lyra.bmp" "$OUT/home_cover_grid.bmp" <<'PY'
+  diff_out=$(python3 - "$OUT/home_lyra.bmp" "$OUT/home_cover_grid.bmp" <<'PY'
 import sys
 from PIL import Image, ImageChops
 a, b = (Image.open(p).convert("L") for p in sys.argv[1:3])
@@ -223,14 +282,20 @@ if a.size != b.size:
     print(-1)  # size mismatch is reported by the per-image check, not as "different"
 else:
     d = ImageChops.difference(a, b).point(lambda v: 255 if v > 32 else 0)
-    print(round(100.0 * d.histogram()[255] / (a.size[0] * a.size[1]), 2))
+    total = a.size[0] * a.size[1]
+    changed = d.histogram()[255]
+    print(changed, total)
 PY
 )
-  if [ "$diff_pct" = "-1" ]; then
+  diff_changed=$(echo "$diff_out" | awk '{print $1}')
+  diff_total=$(echo "$diff_out" | awk '{print $2}')
+  if [ "$diff_changed" = "-1" ]; then
     echo "required cover_grid_differs SKIP frame sizes differ (see per-image check)" | tee -a "$SUMMARY"
-  elif python3 -c "import sys; sys.exit(0 if float('$diff_pct') >= 5.0 else 1)"; then
+  elif [ "$((diff_changed * 100))" -ge "$((diff_total * 5))" ]; then
+    diff_pct=$(awk "BEGIN{printf \"%.2f\", 100.0*$diff_changed/$diff_total}")
     echo "required cover_grid_differs PASS ${diff_pct}% pixels differ from home_lyra" | tee -a "$SUMMARY"
   else
+    diff_pct=$(awk "BEGIN{printf \"%.2f\", 100.0*$diff_changed/$diff_total}")
     echo "required cover_grid_differs FAIL only ${diff_pct}% pixels differ (theme setting not applied?)" | tee -a "$SUMMARY"
     required_failures=$((required_failures + 1))
   fi
@@ -247,6 +312,144 @@ run_scenario experimental library "" \
 run_scenario experimental library_tap "" \
   "0:WAIT:Entering activity: Home;1500:TAP:0.50,0.5225;1600:WAIT:Entering activity: Library;4000:SHOT:$OUT/library_tap.bmp;5500:QUIT" \
   library_tap.bmp
+
+# -------------------------------------------------------------------------
+# PiccoOS: Balanced 3.0 extended scenarios (experimental — never fail CI)
+# -------------------------------------------------------------------------
+
+# inject_recent_books <sd-dir> <corpus-dir>
+# Pre-populates /.crosspoint/recent.json with 4 entries pointing to corpus EPUBs.
+# Titles are long Cyrillic strings to exercise wrappedText on Hero/Recent slots.
+# Hardened: checks Python exit code, verifies 4 entries written, errors → FAIL.
+inject_recent_books() {
+  local sd=$1 corpus=$2
+  local out
+  out=$(python3 - "$sd" "$corpus" <<'PY'
+import json, pathlib, sys
+sd = pathlib.Path(sys.argv[1])
+epubs = sorted((sd / "books").glob("*.epub"))
+if not epubs:
+    print("inject_recent_books: no EPUBs in", sd / "books", file=sys.stderr)
+    sys.exit(1)
+if len(epubs) < 4:
+    print(f"inject_recent_books: need at least 4 EPUBs in corpus, found {len(epubs)}", file=sys.stderr)
+    sys.exit(1)
+titles = [
+    "Достопримечательности: записки наблюдателя по дороге домой",
+    "Человеконенавистничество и другие истории",
+    "Высокопревосходительство: в двух частях о котором никто не помнил",
+]
+authors = ["Анна Соколова", "Пётр Белов", "Мария Кузнецова"]
+entries = [{"path": f"/books/{epubs[i].name}", "title": titles[i % len(titles)],
+            "author": authors[i % len(authors)], "coverBmpPath": ""} for i in range(4)]
+dest = sd / ".crosspoint" / "recent.json"
+dest.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+# Verify round-trip: read back and confirm exactly 4 entries.
+loaded = json.loads(dest.read_text(encoding="utf-8"))
+if len(loaded) != 4:
+    print(f"inject_recent_books: wrote 4 entries but read back {len(loaded)}", file=sys.stderr)
+    sys.exit(1)
+print("inject_recent_books: 4 entries OK")
+PY
+  ) || { echo "inject_recent_books FAILED (python exit $?): $out" >&2; return 1; }
+  echo "$out"
+  # Confirm exactly 4 entries written.
+  echo "$out" | grep -qE "^inject_recent_books: 4 entries OK$" || {
+    echo "inject_recent_books: unexpected output: $out" >&2; return 1
+  }
+}
+
+# run_empty_scenario: variant of run_scenario that creates an SD card with no
+# EPUBs. Used to test the empty-state Home screen render path.
+run_empty_scenario() {
+  local kind=$1 name=$2 settings=$3 script=$4; shift 4
+  rm -f "$OUT/$name.log" "$OUT/$name.timeline.txt"  # F3: stale artifacts from prior runs
+  for img in "$@"; do rm -f "$OUT/$img" "$OUT/${img%.bmp}.png"; done
+  local lint_msg
+  if ! lint_msg=$(lint_script "$script" "$OUT/$name.timeline.txt"); then
+    echo "$kind $name FAIL bad input script: $lint_msg" | tee -a "$SUMMARY"; return 0
+  fi
+  local remaining=$(( RUN_TIMEOUT_S - ($(date +%s) - RUN_START) ))
+  if [ "$remaining" -lt 5 ]; then
+    echo "$kind $name SKIPPED run timeout reached" | tee -a "$SUMMARY"; return 0
+  fi
+  local limit=$SCENARIO_TIMEOUT_S
+  [ "$remaining" -lt "$limit" ] && limit=$remaining
+  local sd="$WORK/$name"
+  mkdir -p "$sd/books" "$sd/.crosspoint" || {
+    echo "$kind $name FAIL setup: mkdir failed" | tee -a "$SUMMARY"
+    [ "$kind" = required ] && required_failures=$((required_failures + 1))
+    return 0
+  }
+  # No EPUBs copied — empty SD card tests the no-books render path.
+  if [ -n "$settings" ]; then
+    printf '%s\n' "$settings" > "$sd/.crosspoint/settings.json" || {
+      echo "$kind $name FAIL setup: write settings.json failed" | tee -a "$SUMMARY"
+      [ "$kind" = required ] && required_failures=$((required_failures + 1))
+      return 0
+    }
+  fi
+  local log="$OUT/$name.log" start rc status="PASS" reason=""
+  start=$(date +%s)
+  ( cd "$sd" || exit 2
+    export CROSSPOINT_SIM_SD="$sd" CROSSPOINT_SIM_INPUT_SCRIPT="$script"
+    export CROSSPOINT_SIM_WAIT_TIMEOUT_MS=$(( (limit > 15 ? limit - 10 : 5) * 1000 ))
+    run_with_timeout "$limit" "$log" "$PROGRAM" )
+  rc=$?
+  local secs=$(( $(date +%s) - start ))
+  if [ $rc -eq 124 ]; then status=FAIL; reason="timeout ${limit}s"
+  elif [ $rc -ne 0 ]; then status=FAIL; reason="exit $rc"
+  elif ! grep -q "Entering activity: Home" "$log"; then status=FAIL; reason="Home activity not in log"
+  fi
+  for img in "$@"; do
+    if ! grep -qF "[SIM] Saved screenshot: $OUT/$img" "$log"; then
+      status=FAIL; reason="${reason:+$reason; }SHOT not executed for $img"; continue
+    fi
+    local size_msg
+    size_msg=$(check_image "$OUT/$img"); case $? in
+      0) ;;
+      3) status=FAIL; reason="${reason:+$reason; }blank $img" ;;
+      4) status=FAIL; reason="${reason:+$reason; }$img $size_msg (want 480x800)" ;;
+      *) status=FAIL; reason="${reason:+$reason; }missing $img" ;;
+    esac
+  done
+  echo "$kind $name $status ${secs}s ${reason}" | tee -a "$SUMMARY"
+  [ "$status" = FAIL ] && tail -n 15 "$log" >&2
+  return 0
+}
+
+# B: Balanced home with 4 recent books injected (long Cyrillic titles).
+# Tests: hero cover display (D-029 300px thumb), Noto Sans Cyrillic wrapping (D-031),
+# recent covers (192px thumbs), progress bar (0% because no progress recorded).
+# Allow 15 s for cover generation (4 EPUBs × EPUB parse + BMP write on first render).
+# EXPERIMENTAL until first successful CI run with cover+text verified by eye.
+_EXTRA_SD_SETUP=inject_recent_books
+run_scenario experimental home_balanced_reading '{"uiTheme":1,"homeLayout":1}' \
+  "0:WAIT:Entering activity: Home;15000:SHOT:$OUT/home_balanced_reading.bmp;17000:QUIT" \
+  home_balanced_reading.bmp
+# R2: confirm RecentBooksStore loaded the injected history (LOG_LEVEL=2 → DBG visible).
+if [ -f "$OUT/home_balanced_reading.log" ]; then
+  if grep -q "RBS.*Recent books loaded from file" "$OUT/home_balanced_reading.log"; then
+    echo "experimental home_balanced_reading_history PASS recent books loaded from file" | tee -a "$SUMMARY"
+  else
+    echo "experimental home_balanced_reading_history WARN recent books not in log (check LOG_LEVEL)" | tee -a "$SUMMARY"
+  fi
+fi
+
+# C: Balanced home with empty SD card — tests empty-state render path.
+# Expected: status bar + empty-state placeholder text + bottom panel; no crash.
+run_empty_scenario experimental home_balanced_empty '{"uiTheme":1,"homeLayout":1}' \
+  "0:WAIT:Entering activity: Home;4000:SHOT:$OUT/home_balanced_empty.bmp;5500:QUIT" \
+  home_balanced_empty.bmp
+
+# D: Balanced home + landscape reader orientation setting (D-036 / C-4 accepted, required).
+# Verifies that SETTINGS.orientation (reader-only, SettingsList.cpp:116) does not suppress Balanced.
+# Roundtrip Library → Reader → Home not tested here (A-08 scope).
+run_scenario required home_balanced_reader_landscape_setting '{"uiTheme":1,"homeLayout":1,"orientation":1}' \
+  "0:WAIT:Entering activity: Home;5000:SHOT:$OUT/home_balanced_reader_landscape_setting.bmp;6500:QUIT" \
+  home_balanced_reader_landscape_setting.bmp
+# C-4 log check: layout=balanced must appear; log absent/empty → not executed; marker absent → regression.
+c4_check "$OUT/home_balanced_reader_landscape_setting.log"
 
 if [ "$HAVE_PIL" = "1" ]; then
   python3 - "$OUT" <<'PY'

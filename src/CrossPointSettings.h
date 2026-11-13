@@ -354,6 +354,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t longPressMenuFunction = LP_MENU_DISABLED;
   // UI Theme
   uint8_t uiTheme = LYRA;
+  // PiccoOS: Home layout (D-035). 0 = standard (by uiTheme); 1 = PiccoOS Balanced.
+  uint8_t homeLayout = 0;
   // Sunlight fading compensation
   uint8_t fadingFix = 0;
   // Power button return from footnotes (1 = enabled, 0 = disabled)

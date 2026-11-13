@@ -33,3 +33,6 @@ lib/EpdFont/scripts/output/
 sdkconfig.sticky
 sdkconfig.x4pro
 flake.*
+*.swp
+piccoos/review/
+A07_Code_Review*.zip

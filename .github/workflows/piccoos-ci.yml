@@ -60,6 +60,57 @@ jobs:
           set -euo pipefail
           chmod +x piccoos/tools/verify_pins.sh
           piccoos/tools/verify_pins.sh .github/workflows/piccoos-ci.yml | tee pins.txt
+      - name: Forbidden paths — upstream-only files must not be touched
+        run: |
+          set -euo pipefail
+          # Verify baseline is reachable; an unknown SHA would let git diff silently emit nothing.
+          git rev-parse --verify "${{ env.UPSTREAM_SHA }}^{commit}" || {
+            echo "FAIL: UPSTREAM_SHA ${{ env.UPSTREAM_SHA }} not found in history" >&2; exit 1
+          }
+          # D-033: PiccoOS code lives in src/piccoos/; these upstream paths are off-limits.
+          FORBIDDEN=(
+            lib/Epub
+            lib/hal
+            freeink-sdk
+            src/activities/reader
+            src/components/UITheme.h
+            src/components/UITheme.cpp
+            src/components/CoverGridHomeUi.h
+            src/components/CoverGridHomeUi.cpp
+            src/SettingsList.h
+            ':(glob)**/partitions*.csv'
+          )
+          FAIL=0
+          for path in "${FORBIDDEN[@]}"; do
+            # Capture before testing so a git error cannot silently look like "no changes".
+            changed=$(git diff --name-only "${{ env.UPSTREAM_SHA }}" HEAD -- "$path")
+            if echo "$changed" | grep -q .; then
+              echo "FAIL: forbidden path changed: $path"
+              FAIL=1
+            else
+              echo "OK: $path"
+            fi
+          done
+          if [ "$FAIL" -eq 1 ]; then
+            echo "One or more forbidden upstream paths were modified (D-033)." >&2
+            exit 1
+          fi
+          # Budget: upstream diff (src+lib, excluding src/piccoos) must not exceed 150 lines.
+          numstat=$(git diff --numstat "${{ env.UPSTREAM_SHA }}" HEAD -- src lib ':(exclude)src/piccoos')
+          if echo "$numstat" | awk -F'\t' '$1=="-"{found=1} END{exit found}'; then : ; else
+            echo "FAIL: binary rows in upstream diff (non-text upstream file changed)" >&2
+            echo "$numstat"; exit 1
+          fi
+          total=$(echo "$numstat" | awk '{add+=$1; del+=$2} END {print add+del+0}')
+          echo "Upstream diff budget: ${total}/150 lines"
+          {
+            echo '## Upstream diff budget'
+            echo "Total added+deleted (src+lib, ex src/piccoos): **${total}/150**"
+            echo '```'; echo "$numstat"; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$total" -gt 150 ]; then
+            echo "FAIL: upstream diff exceeds 150-line budget (${total} lines)" >&2; exit 1
+          fi
       - name: Summary
         if: always()
         run: |

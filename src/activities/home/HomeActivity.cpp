@@ -25,6 +25,8 @@
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "piccoos/home/BalancedHomeUi.h"
+#include "piccoos/home/CoverGridHomeUiAdapter.h"
 
 int HomeActivity::getMenuItemCount() const {
   int count = 4;  // File Browser, Library, File transfer, Settings
@@ -40,7 +42,7 @@ int HomeActivity::getMenuItemCount() const {
 void HomeActivity::loadRecentBooks(int maxBooks) {
   recentBooks.clear();
   const auto& books = RECENT_BOOKS.getBooks();
-  recentBooks.reserve(coverGridUi ? maxBooks : std::min(static_cast<int>(books.size()), maxBooks));
+  recentBooks.reserve(homeScreenUi ? maxBooks : std::min(static_cast<int>(books.size()), maxBooks));
 
   for (const RecentBook& book : books) {
     // Limit to maximum number of recent books
@@ -58,7 +60,8 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
 }
 
 void HomeActivity::fillCoverGridFromLibrary() {
-  if (recentBooks.size() >= CoverGridHomeUi::MAX_BOOKS) return;
+  const int maxB = homeScreenUi ? homeScreenUi->maxBooks() : CoverGridHomeUi::MAX_BOOKS;  // PiccoOS:
+  if (static_cast<int>(recentBooks.size()) >= maxB) return;
   // Keep the index and record together off the task stack; reuse for every row.
   struct LibraryReader {
     library::LibraryIndexFile index;
@@ -81,7 +84,7 @@ void HomeActivity::fillCoverGridFromLibrary() {
       return;
     }
   }
-  for (uint16_t row = 0; row < index.bookCount() && recentBooks.size() < CoverGridHomeUi::MAX_BOOKS; ++row) {
+  for (uint16_t row = 0; row < index.bookCount() && static_cast<int>(recentBooks.size()) < maxB; ++row) {
     RecentBook book;
     if (!index.readRecord(index.ordinalForRow(library::SortOrder::RecentDesc, row), record) ||
         !index.readPath(record, book.path))
@@ -166,11 +169,13 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
   Rect popupRect;
 
   int progress = 0;
-  for (RecentBook& book : recentBooks) {
+  for (int i = 0; i < static_cast<int>(recentBooks.size()); ++i) {
+    RecentBook& book = recentBooks[i];
     // The cover grid shares one slot size; generating at any other height
     // would rescale the dithered thumb at draw time and alias badly.
-    const int thumbHeight = coverGridUi ? coverGridUi->thumbHeightFor() : coverHeight;
-    if (coverGridUi) {
+    // PiccoOS: homeScreenUi uses per-index height (D-029); coverHeight unused for homeScreenUi path.
+    const int thumbHeight = homeScreenUi ? homeScreenUi->thumbHeightFor(i) : coverHeight;
+    if (homeScreenUi) {
       loadGridCover(book, thumbHeight, showingLoading, popupRect);
       ++progress;
       if (showingLoading) GUI.fillPopupProgress(renderer, popupRect, progress * 100 / recentBooks.size());
@@ -239,26 +244,35 @@ void HomeActivity::onEnter() {
   hasPlugins = SETTINGS.pluginsEnabled != 0;
 
   const auto& metrics = UITheme::getInstance().getMetrics();
-  if (UITheme::getInstance().hasCoverGridHome()) {
-    // Screen-lifetime interaction tables and component properties exceed the stack budget.
-    coverGridUi = makeUniqueNoThrow<CoverGridHomeUi>(renderer);
-    if (!coverGridUi) LOG_ERR("HOME", "OOM: cover grid UI; using standard home");
+  const bool wantBalanced = SETTINGS.homeLayout == 1;  // PiccoOS: D-035
+  if (wantBalanced) {
+    homeScreenUi = makeUniqueNoThrow<BalancedHomeUi>(renderer);
+    if (!homeScreenUi) LOG_ERR("HOME", "OOM: Balanced UI; using standard home");
+  } else if (UITheme::getInstance().hasCoverGridHome()) {
+    homeScreenUi = makeUniqueNoThrow<CoverGridHomeUiAdapter>(renderer);
+    if (!homeScreenUi) LOG_ERR("HOME", "OOM: cover grid adapter; using standard home");
   }
-  loadRecentBooks(coverGridUi ? CoverGridHomeUi::MAX_BOOKS : metrics.homeRecentBooksCount);
+  LOG_INF("HOME", "layout=%s", (wantBalanced && homeScreenUi) ? "balanced" : "standard");  // PiccoOS: D-035, R3
+  loadRecentBooks(homeScreenUi ? homeScreenUi->maxBooks() : metrics.homeRecentBooksCount);
   hasContinueReading = !recentBooks.empty();
-  if (coverGridUi) {
+  if (homeScreenUi) {
     fillCoverGridFromLibrary();
     resolveGridCoverPaths();
     const HomeMenuItem slot = slotItem();
-    coverGridUi->begin(recentBooks,
-                       slot == HomeMenuItem::PLUGINS        ? CoverGridHomeUi::SlotTab::PLUGINS
-                       : slot == HomeMenuItem::OPDS_BROWSER ? CoverGridHomeUi::SlotTab::OPDS
-                                                            : CoverGridHomeUi::SlotTab::NONE,
-                       hasContinueReading);
+    homeScreenUi->begin(recentBooks,
+                        slot == HomeMenuItem::PLUGINS        ? CoverGridHomeUi::SlotTab::PLUGINS
+                        : slot == HomeMenuItem::OPDS_BROWSER ? CoverGridHomeUi::SlotTab::OPDS
+                                                             : CoverGridHomeUi::SlotTab::NONE,
+                        hasContinueReading);
+    if (homeScreenUi->visibleBooks() < static_cast<int>(recentBooks.size()))  // PiccoOS: R1
+      recentBooks.erase(recentBooks.begin() + homeScreenUi->visibleBooks(), recentBooks.end());
   }
 
   const auto base = static_cast<int>(recentBooks.size());
   selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, slotItem());
+  if (homeScreenUi && homeScreenUi->focusTransferWhenEmpty() && recentBooks.empty()  // PiccoOS: C-1, R5
+      && initialMenuItem == HomeMenuItem::NONE)
+    selectorIndex = menuItemToIndex(HomeMenuItem::FILE_TRANSFER, slotItem());
 
   // Trigger first update
   requestUpdate();
@@ -267,7 +281,7 @@ void HomeActivity::onEnter() {
 void HomeActivity::onExit() {
   Activity::onExit();
 
-  coverGridUi.reset();
+  homeScreenUi.reset();  // PiccoOS:
 
   // Free the stored cover buffer if any
   freeCoverBuffer();
@@ -346,7 +360,8 @@ void HomeActivity::loop() {
 
   // Cover grid home splits navigation by button group (see below); the flat
   // next/previous cycle is for the classic list home only.
-  if (!coverGridUi) {
+  // PiccoOS: Balanced also uses flat nav (linearNavigation()=true, D-037).
+  if (!homeScreenUi || homeScreenUi->linearNavigation()) {
     buttonNavigator.onNext([this, menuCount] {
       selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
       requestUpdate();
@@ -378,8 +393,8 @@ void HomeActivity::loop() {
     return;
   }
 
-  if (coverGridUi) {
-    const int touched = coverGridUi->selectedAction(mappedInput);
+  if (homeScreenUi) {  // PiccoOS:
+    const int touched = homeScreenUi->selectedAction(mappedInput);
     if (touched >= 0 && touched < menuCount) {
       selectorIndex = touched;
       activateSelection();
@@ -389,6 +404,7 @@ void HomeActivity::loop() {
       activateSelection();
       return;
     }
+    if (homeScreenUi->linearNavigation()) return;  // PiccoOS: D-037, Balanced skips band nav
     // Side page buttons walk the covers, front Left/Right walk the tabs
     // (selectorIndex is flat: books first, then the tab items). A press while
     // selection sits in the other band jumps into this band first.
@@ -484,11 +500,11 @@ void HomeActivity::render(RenderLock&&) {
   const Rect content = UITheme::getInstance().getContentArea(renderer);
 
   renderer.clearScreen();
-  if (coverGridUi) {
+  if (homeScreenUi) {  // PiccoOS:
     const auto drawGrid = [&] {
       renderer.clearScreen();
-      coverGridUi->setSelection(selectorIndex);
-      UITheme::getInstance().drawCoverGridHome(*coverGridUi);
+      homeScreenUi->setSelection(selectorIndex);
+      homeScreenUi->render();
       // Front Left/Right walk the tabs, so their hints read Left/Right; the
       // side page buttons (unhinted) walk the covers.
       const auto labels = mappedInput.mapLabels(hasContinueReading ? tr(STR_RESUME) : "", tr(STR_SELECT),
@@ -501,16 +517,16 @@ void HomeActivity::render(RenderLock&&) {
     // any missing thumbs must be generated. Resolve the covers before the
     // panel is touched and redraw into the framebuffer, so Home paints once
     // instead of three e-ink refreshes (placeholder, placeholder, covers).
-    if (coverGridUi->takeThumbHeightChanged()) {
-      coverGridUi->refreshCoverPaths();
+    if (homeScreenUi->takeThumbHeightChanged()) {
+      homeScreenUi->refreshCoverPaths();
       recentsLoaded = false;
     }
     if (!recentsLoaded && !recentsLoading) {
-      loadRecentCovers(CoverGridHomeUi::THUMB_HEIGHT);
-      coverGridUi->refreshCoverPaths();
+      loadRecentCovers(CoverGridHomeUi::THUMB_HEIGHT);  // PiccoOS: height unused for homeScreenUi (thumbHeightFor(i))
+      homeScreenUi->refreshCoverPaths();
       drawGrid();
-      if (coverGridUi->takeThumbHeightChanged()) {
-        coverGridUi->refreshCoverPaths();
+      if (homeScreenUi->takeThumbHeightChanged()) {
+        homeScreenUi->refreshCoverPaths();
         recentsLoaded = false;
         requestUpdate();
       }
