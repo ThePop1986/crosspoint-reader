@@ -243,7 +243,7 @@ void BalancedHomeUi::drawStartReadingCard() {
   renderer.drawRect(layout::HERO_X, layout::HERO_Y, layout::HERO_W, layout::HERO_H);
   UITheme::drawCenteredWrappedText(renderer,
       Rect{layout::HERO_X + 4, layout::HERO_Y + 4, layout::HERO_W - 8, (layout::HERO_H - 8) / 2},
-      NOTOSANS_16_FONT_ID, tr(STR_START_READING), 2);
+      NOTOSANS_16_FONT_ID, tr(STR_PICCOOS_START_READING), 2);
   UITheme::drawCenteredWrappedText(renderer,
       Rect{layout::HERO_X + 4, layout::HERO_Y + (layout::HERO_H) / 2, layout::HERO_W - 8, layout::HERO_H / 2},
       NOTOSANS_14_FONT_ID, tr(STR_OPEN_LIBRARY), 2);
@@ -269,8 +269,8 @@ void BalancedHomeUi::drawRecentSection() {
   if (recentCount <= 0) return;
 
   // C-2: "Новые книги" header when no reading history; "Недавние" otherwise.
-  const StrId headerId = hasContinueReading_ ? STR_RECENT : STR_NEW_BOOKS;
-  renderer.drawText(NOTOSANS_16_FONT_ID, layout::MARGIN, layout::SECTION_BASE, tr(headerId), true,
+  const StrId headerId = hasContinueReading_ ? StrId::STR_RECENT : StrId::STR_NEW_BOOKS;
+  renderer.drawText(NOTOSANS_16_FONT_ID, layout::MARGIN, layout::SECTION_BASE, I18n::getInstance().get(headerId), true,
                     EpdFontFamily::BOLD);
 
   // "Все книги ›" (14 regular, right-aligned at x=456; hidden when < 4 books before trim; spec §3).
